@@ -1,17 +1,18 @@
 use bili_music_download::bapi;
 use iced::{
-    button, scrollable, text_input, Application, Button, Checkbox, Clipboard, Column,
-    Command, Container, Element, Length, Row, Scrollable, Settings, Text,
-    TextInput,
+    button, scrollable, text_input, Application, Button, Checkbox, Clipboard, Column, Command,
+    Container, Element, Length, Row, Scrollable, Settings, Text, TextInput,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
-fn main() -> iced::Result {
+#[tokio::main]
+async fn main() -> iced::Result {
     let mut my_settings = Settings::default();
     my_settings.default_font = Some(include_bytes!("LXGWWenKai-Regular.ttf"));
     my_settings.window.size = (300, 200);
     return App::run(my_settings);
-
 }
 
 #[derive(Clone, Debug)]
@@ -30,7 +31,9 @@ enum Message {
     FinalStep,
     ChooseFile,
     StartDown,
-    Finish(bool)
+    Finish(bool),
+    ChangePath(String),
+    ChangeProg(f64),
 }
 
 enum Pages {
@@ -65,6 +68,10 @@ struct App {
     fav_lists: Vec<Check>,
     msg: String,
     path: &'static str,
+    progress: &'static Arc<Mutex<f64>>,
+    downloading: bool,
+    prog_percent: f64,
+    start_down_msg: String,
 }
 
 impl Application for App {
@@ -98,6 +105,10 @@ impl Application for App {
                 fav_lists: vec![],
                 msg: "".to_string(),
                 path: "",
+                progress: Box::leak(Arc::new(Mutex::new(0.0)).into()),
+                downloading: false,
+                prog_percent: 0.,
+                start_down_msg: String::from("开始下载"),
             },
             Command::none(),
         )
@@ -180,23 +191,35 @@ impl Application for App {
                 self.page = Pages::SavePage;
                 Command::none()
             }
-            Message::ChooseFile => {
-                self.path = Box::leak(rfd::FileDialog::new()
-                    .pick_folder()
-                    .unwrap_or_default()
-                    .to_str()
-                    .unwrap_or_default().into());
-                Command::none()
-            }
+            Message::ChooseFile => Command::perform(choose_file(), Message::ChangePath),
             Message::StartDown => {
-                self.msg = String::from("下载中...但没有进度条\n（不要重复按开始）");
-                Command::perform(
-                    start_download(&self.down_list, self.cookie_value, &self.path),
-                    Message::Finish,
-                )
+                if !self.downloading {
+                    self.downloading = true;
+                    self.msg = String::from("下载中...但进度条不会自己动");
+                    self.start_down_msg = String::from("刷新进度条");
+                    Command::perform(
+                        start_download(
+                            &self.down_list,
+                            self.cookie_value,
+                            &self.path,
+                            Arc::clone(self.progress),
+                        ),
+                        Message::Finish,
+                    )
+                } else {
+                    Command::perform(open_mu(self.progress), Message::ChangeProg)
+                }
             }
             Message::Finish(_) => {
                 self.msg = String::from("下载完成！");
+                Command::none()
+            }
+            Message::ChangePath(u) => {
+                self.path = Box::leak(u.as_str().into());
+                Command::none()
+            }
+            Message::ChangeProg(p) => {
+                self.prog_percent = p;
                 Command::none()
             }
         }
@@ -288,11 +311,17 @@ impl Application for App {
                         .on_press(Message::ChooseFile),
                 )
                 .push(
-                    Button::new(&mut self.start_download_button, Text::new("开始下载"))
-                        .on_press(Message::StartDown),
+                    Button::new(
+                        &mut self.start_download_button,
+                        Text::new(&self.start_down_msg),
+                    )
+                    .on_press(Message::StartDown),
                 )
                 .push(Text::new(&self.msg))
-
+                .push(Text::new(format!(
+                    "进度：{:.3}%",
+                    100. * self.prog_percent / self.down_list.len() as f64
+                )))
                 .into(),
         };
         let scrollable = Scrollable::new(&mut self.scroll)
@@ -333,6 +362,11 @@ impl Check {
     }
 }
 
+async fn open_mu(m: &Arc<Mutex<f64>>) -> f64 {
+    let prog = *Arc::clone(m).lock().await;
+    prog
+}
+
 async fn get_video_list(fid: &str, sessdata: &str) -> Option<Vec<serde_json::Value>> {
     let v_list = bapi::get_fav_list(fid, sessdata).await;
     match v_list {
@@ -344,14 +378,23 @@ async fn get_video_list(fid: &str, sessdata: &str) -> Option<Vec<serde_json::Val
     }
 }
 
-async fn start_download(v_list: &Vec<serde_json::Value>, sessdata: &str, path: &str) -> bool {
+async fn add_prog(prog: Arc<Mutex<f64>>) {
+    let mut prog = prog.lock().await;
+    *prog += 1.;
+}
+
+async fn start_download(
+    v_list: &Vec<serde_json::Value>,
+    sessdata: &str,
+    path: &str,
+    prog: Arc<Mutex<f64>>,
+) -> bool {
     println!("共{}项", v_list.len());
-    let mut cnt1 = 0;
+    let mut cnt1: i32 = 0;
     for e in v_list.iter() {
         cnt1 += 1;
         println!("第{}个视频", cnt1);
         let bvid = e["bvid"].as_str().unwrap_or_default();
-        //let v_inf = bapi::get_v_info(bvid, sessdata).await;
         let video_inf: bapi::VideoInf = bapi::VideoInf {
             author: e["upper"]["name"]
                 .as_str()
@@ -399,7 +442,8 @@ async fn start_download(v_list: &Vec<serde_json::Value>, sessdata: &str, path: &
                                         )
                                         .await
                                         {
-                                            Ok(_) => {}
+                                            Ok(_) => {
+                                            }
                                             Err(e) => {
                                                 println!("{:?}", e);
                                             }
@@ -420,7 +464,16 @@ async fn start_download(v_list: &Vec<serde_json::Value>, sessdata: &str, path: &
                 println!("{:?}", e);
             }
         }
+        add_prog(Arc::clone(&prog)).await;
         println!("---------");
     }
-    return true
+    return true;
+}
+
+async fn choose_file() -> String {
+    let r = rfd::AsyncFileDialog::new().pick_folder().await;
+    if let Some(u) = r {
+        return u.path().to_str().unwrap_or_default().into();
+    }
+    return String::new();
 }
