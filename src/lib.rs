@@ -1,7 +1,5 @@
 pub mod bapi {
     use std::io::Write;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     #[derive(Clone, Debug)]
     pub struct VideoInf {
@@ -84,31 +82,6 @@ pub mod bapi {
         }
         Ok(list)
     }
-
-    // pub async fn get_v_info(bvid: &str, sessdata: &str) -> Result<VideoInf, MyError> {
-    //     let body: serde_json::Value = reqwest::Client::new()
-    //         .get(format!(
-    //             "https://api.bilibili.com/x/web-interface/view?bvid={}",
-    //             bvid
-    //         ))
-    //         .header("Cookie", gen_cookie(sessdata))
-    //         .send()
-    //         .await?
-    //         .json()
-    //         .await?;
-    //     let msg = body["message"].as_str().unwrap_or_default();
-    //     let code = body["code"].as_i64().unwrap_or_default();
-    //     if code != 0 {
-    //         return Err(MyError::BiliError(BError {
-    //             code,
-    //             msg: String::from(msg),
-    //         }));
-    //     }
-    //     Ok(VideoInf {
-    //         name: String::from(body["data"]["title"].as_str().unwrap_or_default()),
-    //         author: String::from(body["data"]["owner"]["name"].as_str().unwrap_or_default()),
-    //     })
-    // }
 
     pub async fn get_ps(bvid: &str, sessdata: &str) -> Result<serde_json::Value, MyError> {
         let body: serde_json::Value = reqwest::Client::new()
